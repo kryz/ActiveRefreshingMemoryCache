@@ -6,6 +6,7 @@ internal class RequestHandler<TCacheKey, TValue>
     where TCacheKey : notnull
 {
     private readonly List<RequestEntry<TCacheKey, TValue>> requestEntries;
+    private readonly Dictionary<TCacheKey, RequestEntry<TCacheKey, TValue>> requestEntriesMissedInCache;
     private readonly ICacheForRequestHandling<TCacheKey, TValue> cache;
     private readonly ICacheMissDataProvider<TCacheKey, TValue> dataProvider;
     private readonly ICacheKeyFactory<TCacheKey, TValue> cacheKeyFactory;
@@ -23,6 +24,8 @@ internal class RequestHandler<TCacheKey, TValue>
         requestEntries = requestedKeys
             .Select(key => new RequestEntry<TCacheKey, TValue>(key))
             .ToList();
+
+        requestEntriesMissedInCache = new();
 
         this.cache = cache;
         this.dataProvider = dataProvider;
@@ -44,34 +47,21 @@ internal class RequestHandler<TCacheKey, TValue>
 
     private void SearchCache()
     {
-        int found = 0;
-        int missed = 0;
-
-        foreach (var requestedEntry in requestEntries)
+        foreach (var requestEntry in requestEntries)
         {
-            if (!cache.TryGetValue(requestedEntry.Key, out TValue? value))
-            {
-                ++missed;
-                continue;
-            }
-
-            ++found;
-            requestedEntry.FoundValue(value!);
+            if (cache.TryGetValue(requestEntry.Key, out TValue? value))
+                requestEntry.FoundValue(value!);
+            else
+                requestEntriesMissedInCache[requestEntry.Key] = requestEntry;
         }
 
+        var missed = requestEntriesMissedInCache.Count;
+        var found = requestEntries.Count - missed;
         logger.LogDebug("Found in cache: {found}. Missed in cache: {missed}.", found, missed);
     }
 
-
-    private Dictionary<TCacheKey, RequestEntry<TCacheKey, TValue>> RequestEntriesWithoutValue => requestEntries
-        .Where(requestedEntry => !requestedEntry.IsValueFound)
-        .ToDictionary(
-            requestEntry => requestEntry.Key,
-            requestEntry => requestEntry);
-
     private async Task LoadEntriesMissedInCacheAsync()
     {
-        var requestEntriesMissedInCache = RequestEntriesWithoutValue;
         if (!requestEntriesMissedInCache.Any())
             return;
 
@@ -80,7 +70,7 @@ internal class RequestHandler<TCacheKey, TValue>
         foreach (var loadedValue in loadedValues)
         {
             var cacheKey = cacheKeyFactory.GetCacheKey(loadedValue);
-            if (!requestEntriesMissedInCache.TryGetValue(cacheKey, out RequestEntry<TCacheKey, TValue>? loadedRequestEntry))
+            if (!requestEntriesMissedInCache.TryGetValue(cacheKey, out var loadedRequestEntry))
                 continue;
 
             loadedRequestEntry.FoundValue(loadedValue);
